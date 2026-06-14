@@ -1,208 +1,104 @@
 ﻿#include <iostream>
 #include <string>
-#include <vector>
-#include <algorithm>
-#include <stdexcept>
-#include <cstdint>
 
-#include <cryptopp/cryptlib.h>
-#include <cryptopp/aes.h>
-#include <cryptopp/modes.h>
-#include <cryptopp/sha.h>
-#include <cryptopp/base64.h>
-#include <cryptopp/filters.h>
-#include <cryptopp/secblock.h>
+using namespace std;
 
-using namespace CryptoPP;
-
-// 1. 恢复 MRZ 中缺失的数字
-char recover_mrz_character(const std::string& mrz_partial)
+// 扩展欧几里得算法
+long long egcd(long long a, long long b, long long& x, long long& y)
 {
-    const int weights[3] = { 7, 3, 1 };
+    if (b == 0)
+    {
+        x = 1;
+        y = 0;
+        return a;
+    }
 
-    // 构造 char -> value 映射
-    auto char_to_val = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'A' && c <= 'Z') return 10 + (c - 'A');
-        if (c == '<') return 0;
-        throw std::invalid_argument("invalid MRZ character");
-        };
+    long long x1, y1;
+    long long gcd = egcd(b, a % b, x1, y1);
 
-    auto checksum = [&](const std::string& text) -> int {
-        int sum = 0;
-        for (size_t i = 0; i < text.size(); ++i) {
-            sum += char_to_val(text[i]) * weights[i % 3];
+    x = y1;
+    y = x1 - (a / b) * y1;
+
+    return gcd;
+}
+
+// 求模逆
+long long invmod(long long a, long long m)
+{
+    long long x, y;
+    long long gcd = egcd(a, m, x, y);
+
+    if (gcd != 1)
+    {
+        cout << "模逆不存在！" << endl;
+        exit(0);
+    }
+
+    return (x % m + m) % m;
+}
+
+// 快速模幂
+long long modPow(long long base, long long exp, long long mod)
+{
+    long long result = 1;
+
+    while (exp > 0)
+    {
+        if (exp % 2 == 1)
+        {
+            result = (result * base) % mod;
         }
-        return sum % 10;
-        };
 
-    // 找出第一个 '?' 的位置（代码里只替换一次）
-    size_t qpos = mrz_partial.find('?');
-    if (qpos == std::string::npos) {
-        throw std::invalid_argument("no '?' in MRZ");
+        base = (base * base) % mod;
+        exp /= 2;
     }
 
-    // 提取用于校验的子串 21:27 和校验位 27
-    // 注意：原 Python 代码中字符串索引从 0 开始，且该 MRZ 长度固定
-    if (mrz_partial.size() < 28) {
-        throw std::invalid_argument("MRZ too short");
-    }
-
-    std::string candidate = mrz_partial;
-    for (char digit = '0'; digit <= '9'; ++digit) {
-        candidate[qpos] = digit;
-        // 取索引 [21,27) -> 6位, 索引 27 是校验位
-        std::string check_part = candidate.substr(21, 6);
-        int check_digit = candidate[27] - '0';
-        if (checksum(check_part) == check_digit) {
-            return digit;
-        }
-    }
-    throw std::runtime_error("missing MRZ character not found");
-}
-
-// 2. 设置奇偶校验位
-byte set_odd_parity(byte b)
-{
-    byte masked = b & 0xFE;
-    int bits_count = 0;
-    byte tmp = masked;
-    while (tmp) {
-        bits_count += (tmp & 1);
-        tmp >>= 1;
-    }
-    // 如果已有奇数个 1，末尾设 0；否则设 1
-    return masked | (bits_count % 2 == 1 ? 0 : 1);
-}
-
-// 3. AES-CBC 解密
-std::string aes_cbc_decrypt(const std::string& ciphertext, const SecByteBlock& key, const SecByteBlock& iv)
-{
-    std::string plaintext;
-    try {
-        CBC_Mode<AES>::Decryption dec;
-        dec.SetKeyWithIV(key, key.size(), iv, iv.size());
-
-        StringSource ss(ciphertext, true,
-            new StreamTransformationFilter(dec,
-                new StringSink(plaintext)
-            )
-        );
-    }
-    catch (const Exception& e) {
-        std::cerr << "Crypto++ AES decrypt error: " << e.what() << std::endl;
-        throw;
-    }
-    return plaintext;
-}
-
-// 4. 去除 BAC padding (类似 PKCS#7 但略有不同)
-std::string strip_bac_padding(const std::string& data)
-{
-    // 去除末尾连续的 '\x00'
-    size_t end = data.size();
-    while (end > 0 && data[end - 1] == '\x00') {
-        --end;
-    }
-    if (end > 0 && data[end - 1] == '\x01') {
-        // 去掉这个 0x01
-        return data.substr(0, end - 1);
-    }
-    return data.substr(0, end);
-}
-
-// 辅助 Base64 解码
-std::string base64_decode(const std::string& encoded)
-{
-    std::string decoded;
-    StringSource ss(encoded, true,
-        new Base64Decoder(
-            new StringSink(decoded)
-        )
-    );
-    return decoded;
+    return result;
 }
 
 int main()
 {
-    try {
-        // 原始数据
-        std::string mrz_partial = "12345678<8<<<1110182<111116?<<<<<<<<<<<<<<<4";
+    // 选取两个素数
+    long long p = 17;
+    long long q = 11;
 
-        // 恢复缺失的数字
-        char recovered = recover_mrz_character(mrz_partial);
-        std::cout << "Recovered digit: " << recovered << std::endl;
+    // 计算 n
+    long long n = p * q;
 
-        // 补全 MRZ
-        std::string mrz_full = mrz_partial;
-        size_t qpos = mrz_full.find('?');
-        if (qpos != std::string::npos) {
-            mrz_full[qpos] = recovered;
-        }
+    // 计算欧拉函数
+    long long phi = (p - 1) * (q - 1);
 
-        // 提取 mrz_info: [0:10] + [13:20] + [21:28]
-        std::string mrz_info = mrz_full.substr(0, 10)
-            + mrz_full.substr(13, 7)
-            + mrz_full.substr(21, 7);
-        std::cout << "MRZ info: " << mrz_info << std::endl;
+    // 公钥指数
+    long long e = 3;
 
-        // 计算 K_seed (SHA1 前 16 字节)
-        SHA1 sha1;
-        SecByteBlock digest_sha1(SHA1::DIGESTSIZE);
-        sha1.CalculateDigest(digest_sha1, (const byte*)mrz_info.data(), mrz_info.size());
+    // 私钥指数
+    long long d = invmod(e, phi);
 
-        SecByteBlock k_seed(16);
-        std::copy(digest_sha1.begin(), digest_sha1.begin() + 16, k_seed.begin());
+    cout << "===== RSA密钥生成 =====" << endl;
+    cout << "p = " << p << endl;
+    cout << "q = " << q << endl;
+    cout << "n = " << n << endl;
+    cout << "phi(n) = " << phi << endl;
+    cout << "e = " << e << endl;
+    cout << "d = " << d << endl;
 
-        // 计算 raw_key: SHA1(k_seed || 0x00000001)
-        SecByteBlock raw_key_hash(SHA1::DIGESTSIZE);
-        SHA1 sha1_2;
-        sha1_2.Update(k_seed, k_seed.size());
-        uint32_t counter = 1;
-        byte counter_bytes[4] = {
-            (byte)((counter >> 24) & 0xFF),
-            (byte)((counter >> 16) & 0xFF),
-            (byte)((counter >> 8) & 0xFF),
-            (byte)(counter & 0xFF)
-        };
-        sha1_2.Update(counter_bytes, 4);
-        sha1_2.Final(raw_key_hash);
+    cout << "\n公钥: (" << e << ", " << n << ")" << endl;
+    cout << "私钥: (" << d << ", " << n << ")" << endl;
 
-        SecByteBlock raw_key(16);
-        std::copy(raw_key_hash.begin(), raw_key_hash.begin() + 16, raw_key.begin());
+    // 测试数字42
+    long long m = 42;
 
-        // 对 raw_key 每个字节设置奇偶校验位
-        SecByteBlock key_enc(16);
-        for (size_t i = 0; i < 16; ++i) {
-            key_enc[i] = set_odd_parity(raw_key[i]);
-        }
+    cout << "\n原始消息 m = " << m << endl;
 
-        std::cout << "Key (hex): ";
-        for (byte b : key_enc) {
-            printf("%02x", b);
-        }
-        std::cout << std::endl;
+    // 加密
+    long long c = modPow(m, e, n);
 
-        // 密文 (Base64)
-        std::string b64_cipher = "9MgYwmuPrjiecPMx61O6zIuy3MtIXQQ0E59T3xB6u0Gyf1gYs2i3K9Jx"
-            "aa0zj4gTMazJuApwd6+jdyeI5iGHvhQyDHGVlAuYTgJrbFDrfB22Fpil2N"
-            "fNnWFBTXyf7SDI";
-        std::string ciphertext = base64_decode(b64_cipher);
+    cout << "加密后 c = " << c << endl;
 
-        // AES-CBC 解密，IV 全 0
-        SecByteBlock iv(16, 0x00);
-        std::string plaintext_padded = aes_cbc_decrypt(ciphertext, key_enc, iv);
+    // 解密
+    long long decrypted = modPow(c, d, n);
 
-        // 去除特殊填充
-        std::string plaintext = strip_bac_padding(plaintext_padded);
-
-        std::cout << "Decrypted text: " << plaintext << std::endl;
-
-    }
-    catch (const std::exception& ex) {
-        std::cerr << "Error: " << ex.what() << std::endl;
-        return 1;
-    }
+    cout << "解密后 m = " << decrypted << endl;
 
     return 0;
 }
